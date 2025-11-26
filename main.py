@@ -8,77 +8,87 @@ import asyncio
 # আপনার টোকেন
 TOKEN = "8257636584:AAHjbwZc3CdI2VFH6Z8skd6ePzwpZ_F6zHA"
 
-# Flask অ্যাপ
 app = Flask(__name__)
 
-# লগিং
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# টেলিগ্রাম বটের ফাংশন
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.reply_text("হ্যালো! আমি ওয়েবসাইট এবং বট—দুটোই একসাথে চালাচ্ছি! 🚀")
-    except Exception as e:
-        print(f"মেসেজ পাঠাতে সমস্যা হয়েছে: {e}")
+    await update.message.reply_text("হ্যালো! আমি রেডি আছি! 🚀")
 
-# গ্লোবাল অ্যাপ্লিকেশন অবজেক্ট
+# অ্যাপ্লিকেশন তৈরি
 ptb_application = Application.builder().token(TOKEN).build()
 ptb_application.add_handler(CommandHandler("start", start))
 
-# --- ওয়েবসাইটের পেজগুলো ---
+# --- হেল্পার ফাংশন: বট রেডি করা ---
+async def initialize_bot():
+    """বট যদি রেডি না থাকে, তবে রেডি করবে"""
+    if not ptb_application._initialized:
+        try:
+            await ptb_application.initialize()
+            await ptb_application.start()
+            print("Bot initialized successfully via Website Hit!")
+        except Exception as e:
+            print(f"Init Error: {e}")
+
+# --- ওয়েবসাইটের পেজ (এখানেই ম্যাজিক হবে) ---
+# যখনই কেউ হোমপেজে আসবে, বট ব্যাকগ্রাউন্ডে রেডি হয়ে যাবে
 @app.route('/')
-def home():
+async def home():
+    # ওয়েবসাইট লোড হওয়ার সাথে সাথে বট রেডি করা হচ্ছে
+    await initialize_bot()
     return render_template('home.html')
 
 @app.route('/about')
-def about():
+async def about():
+    # অন্য পেজে গেলেও যাতে রেডি হয়
+    await initialize_bot()
     return render_template('about.html')
 
 @app.route('/contact')
 def contact():
     return render_template('contact.html')
 
-# --- টেলিগ্রাম ওয়েব হুক রাউট ---
+# --- টেলিগ্রাম ওয়েব হুক ---
 @app.route(f'/{TOKEN}', methods=['POST'])
 async def telegram_webhook():
-    # ইনিশিয়ালাইজেশন চেক
-    if not ptb_application._initialized:
-        await ptb_application.initialize()
-        await ptb_application.start()
+    # ব্যাকআপ: যদি কেউ ওয়েবসাইট না ভিজিট করে সরাসরি মেসেজ দেয়
+    await initialize_bot()
 
-    # আপডেট প্রসেস করা
     try:
         json_update = request.get_json(force=True)
         update = Update.de_json(json_update, ptb_application.bot)
+        
+        # মেসেজ প্রসেস করা
         await ptb_application.process_update(update)
+    
     except RuntimeError as e:
-        # লুপ ক্লোজ এরর ইগনোর করা
         if "Event loop is closed" in str(e):
-            pass 
-        else:
-            print(f"Critical Runtime Error: {e}")
+            pass
     except Exception as e:
-        print(f"Other Error: {e}")
+        print(f"Error: {e}")
         
     return "OK", 200
 
-# --- মেইন ---
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", "8080"))
     RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
     if RENDER_EXTERNAL_URL:
         webhook_url = f"{RENDER_EXTERNAL_URL}/{TOKEN}"
-        print(f"Setting webhook to: {webhook_url}")
+        print(f"Deploying logic... Webhook: {webhook_url}")
         
-        loop = asyncio.get_event_loop()
-        if not ptb_application._initialized:
-            loop.run_until_complete(ptb_application.initialize())
-        loop.run_until_complete(ptb_application.bot.set_webhook(webhook_url))
+        # সার্ভার রান হওয়ার সময় একবার ইনিশিয়ালাইজ করার চেষ্টা
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(initialize_bot())
+            loop.run_until_complete(ptb_application.bot.set_webhook(webhook_url))
+        except Exception as e:
+            print(f"Startup Error: {e}")
     else:
-        print("Running locally...")
+        print("Local Mode...")
 
     app.run(host="0.0.0.0", port=PORT)
     
