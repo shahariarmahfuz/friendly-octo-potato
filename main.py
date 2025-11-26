@@ -1,12 +1,18 @@
 import os
 import logging
+import asyncio
+import threading
+import queue
 from flask import Flask, request, render_template
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-import asyncio
 
-# আপনার টোকেন
+# টোকেন
 TOKEN = "8257636584:AAHjbwZc3CdI2VFH6Z8skd6ePzwpZ_F6zHA"
+
+# ১. একটি গ্লোবাল বক্স (Queue) তৈরি করা হলো
+# Flask এখানে মেসেজ রাখবে, আর Bot এখান থেকে মেসেজ নিয়ে কাজ করবে।
+update_queue = queue.Queue()
 
 app = Flask(__name__)
 
@@ -14,81 +20,106 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
+# --- বটের লজিক ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("হ্যালো! আমি রেডি আছি! 🚀")
+    await update.message.reply_text("হ্যালো! আমি ব্যাকগ্রাউন্ড থ্রেড থেকে রিপ্লাই দিচ্ছি! ⚡")
 
-# অ্যাপ্লিকেশন তৈরি
-ptb_application = Application.builder().token(TOKEN).build()
-ptb_application.add_handler(CommandHandler("start", start))
-
-# --- হেল্পার ফাংশন: বট রেডি করা ---
-async def initialize_bot():
-    """বট যদি রেডি না থাকে, তবে রেডি করবে"""
-    if not ptb_application._initialized:
+async def bot_loop(application):
+    """এটি আলাদা থ্রেডে চলবে এবং কিউ (Queue) চেক করবে"""
+    print("Bot Worker: Started & Waiting for messages...")
+    
+    # বট ইনিশিয়ালাইজ করা
+    await application.initialize()
+    await application.start()
+    
+    while True:
+        # কিউ থেকে মেসেজ নেওয়া (Blocking call না করে)
         try:
-            await ptb_application.initialize()
-            await ptb_application.start()
-            print("Bot initialized successfully via Website Hit!")
+            # কিউ চেক করা (যদি খালি থাকে তবে ১ সেকেন্ড অপেক্ষা করবে)
+            update_data = update_queue.get(timeout=1) 
+            
+            # JSON থেকে আপডেট অবজেক্ট তৈরি
+            update = Update.de_json(update_data, application.bot)
+            
+            # মেসেজ প্রসেস করা
+            await application.process_update(update)
+            print("Bot Worker: Message Processed!")
+            
+        except queue.Empty:
+            # কিউ খালি থাকলে লুপ ঘুরতে থাকবে, বন্ধ হবে না
+            continue
         except Exception as e:
-            print(f"Init Error: {e}")
+            print(f"Bot Worker Error: {e}")
 
-# --- ওয়েবসাইটের পেজ (এখানেই ম্যাজিক হবে) ---
-# যখনই কেউ হোমপেজে আসবে, বট ব্যাকগ্রাউন্ডে রেডি হয়ে যাবে
+def run_bot_in_background():
+    """এই ফাংশনটি ব্যাকগ্রাউন্ড থ্রেড তৈরি করে"""
+    # নতুন ইভেন্ট লুপ তৈরি (আলাদা থ্রেডের জন্য)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # অ্যাপ্লিকেশন বিল্ড করা
+    ptb_application = Application.builder().token(TOKEN).build()
+    ptb_application.add_handler(CommandHandler("start", start))
+    
+    # লুপ চালু করা
+    loop.run_until_complete(bot_loop(ptb_application))
+
+# --- Flask ওয়েবসাইটের লজিক ---
+
 @app.route('/')
-async def home():
-    # ওয়েবসাইট লোড হওয়ার সাথে সাথে বট রেডি করা হচ্ছে
-    await initialize_bot()
+def home():
     return render_template('home.html')
 
 @app.route('/about')
-async def about():
-    # অন্য পেজে গেলেও যাতে রেডি হয়
-    await initialize_bot()
+def about():
     return render_template('about.html')
 
 @app.route('/contact')
 def contact():
     return render_template('contact.html')
 
-# --- টেলিগ্রাম ওয়েব হুক ---
 @app.route(f'/{TOKEN}', methods=['POST'])
-async def telegram_webhook():
-    # ব্যাকআপ: যদি কেউ ওয়েবসাইট না ভিজিট করে সরাসরি মেসেজ দেয়
-    await initialize_bot()
-
+def telegram_webhook():
+    """Flask শুধু মেসেজ রিসিভ করে কিউ-তে রেখে দিবে"""
     try:
         json_update = request.get_json(force=True)
-        update = Update.de_json(json_update, ptb_application.bot)
         
-        # মেসেজ প্রসেস করা
-        await ptb_application.process_update(update)
-    
-    except RuntimeError as e:
-        if "Event loop is closed" in str(e):
-            pass
+        # ১. মেসেজটি কিউ-তে রাখা হলো (বট পরে প্রসেস করবে)
+        update_queue.put(json_update)
+        
+        # ২. টেলিগ্রামকে সাথে সাথে "OK" বলে দেওয়া হলো
+        # এতে টেলিগ্রাম ভাববে সার্ভার খুব ফাস্ট এবং টাইমআউট হবে না
+        return "OK", 200
+        
     except Exception as e:
-        print(f"Error: {e}")
-        
-    return "OK", 200
+        print(f"Webhook Error: {e}")
+        return "Error", 500
 
+# --- মেইন ---
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", "8080"))
     RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-    if RENDER_EXTERNAL_URL:
-        webhook_url = f"{RENDER_EXTERNAL_URL}/{TOKEN}"
-        print(f"Deploying logic... Webhook: {webhook_url}")
-        
-        # সার্ভার রান হওয়ার সময় একবার ইনিশিয়ালাইজ করার চেষ্টা
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(initialize_bot())
-            loop.run_until_complete(ptb_application.bot.set_webhook(webhook_url))
-        except Exception as e:
-            print(f"Startup Error: {e}")
-    else:
-        print("Local Mode...")
+    # ১. বট ওয়ার্কার চালু করা (আলাদা থ্রেডে)
+    # daemon=True মানে হলো মেইন প্রোগ্রাম বন্ধ হলে থ্রেডও বন্ধ হবে
+    bot_thread = threading.Thread(target=run_bot_in_background, daemon=True)
+    bot_thread.start()
 
+    # ২. ওয়েব হুক সেট করা (মেইন থ্রেড থেকে)
+    if RENDER_EXTERNAL_URL:
+        # হুক সেট করার জন্য আমাদের একটি টেম্পোরারি সিঙ্ক ফাংশন দরকার
+        # কিন্তু আমরা requests লাইব্রেরি দিয়ে সহজভাবে এটি করতে পারি
+        import requests
+        webhook_url = f"{RENDER_EXTERNAL_URL}/{TOKEN}"
+        print(f"Setting webhook via requests to: {webhook_url}")
+        try:
+            requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
+        except Exception as e:
+            print(f"Webhook setting failed: {e}")
+    else:
+        print("Running locally...")
+
+    # ৩. Flask সার্ভার রান করা (মেইন থ্রেডে)
+    print("Starting Flask Server on Main Thread...")
     app.run(host="0.0.0.0", port=PORT)
     
