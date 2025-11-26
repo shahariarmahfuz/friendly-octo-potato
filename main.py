@@ -8,24 +8,26 @@ import asyncio
 # আপনার টোকেন
 TOKEN = "8257636584:AAHjbwZc3CdI2VFH6Z8skd6ePzwpZ_F6zHA"
 
-# Flask অ্যাপ তৈরি
+# Flask অ্যাপ
 app = Flask(__name__)
 
-# লগিং সেটআপ
+# লগিং
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
 # টেলিগ্রাম বটের ফাংশন
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("হ্যালো! আমি ওয়েবসাইট এবং বট—দুটোই একসাথে চালাচ্ছি! 🚀")
+    try:
+        await update.message.reply_text("হ্যালো! আমি ওয়েবসাইট এবং বট—দুটোই একসাথে চালাচ্ছি! 🚀")
+    except Exception as e:
+        print(f"মেসেজ পাঠাতে সমস্যা হয়েছে: {e}")
 
-# গ্লোবাল অ্যাপ্লিকেশন অবজেক্ট তৈরি
+# গ্লোবাল অ্যাপ্লিকেশন অবজেক্ট
 ptb_application = Application.builder().token(TOKEN).build()
 ptb_application.add_handler(CommandHandler("start", start))
 
-# --- ওয়েবসাইটের পেজগুলো (Routes) ---
-
+# --- ওয়েবসাইটের পেজগুলো ---
 @app.route('/')
 def home():
     return render_template('home.html')
@@ -41,44 +43,42 @@ def contact():
 # --- টেলিগ্রাম ওয়েব হুক রাউট ---
 @app.route(f'/{TOKEN}', methods=['POST'])
 async def telegram_webhook():
-    # সমস্যা সমাধান: এখানে চেক করা হচ্ছে বট চালু আছে কিনা
+    # ইনিশিয়ালাইজেশন চেক
     if not ptb_application._initialized:
         await ptb_application.initialize()
         await ptb_application.start()
 
-    # টেলিগ্রাম থেকে আসা ডেটা নেওয়া
-    json_update = request.get_json(force=True)
-    
-    # আপডেট তৈরি করা
-    update = Update.de_json(json_update, ptb_application.bot)
-    
-    # বটের মাধ্যমে প্রসেস করা
-    await ptb_application.process_update(update)
-    
-    return "OK"
+    # আপডেট প্রসেস করা
+    try:
+        json_update = request.get_json(force=True)
+        update = Update.de_json(json_update, ptb_application.bot)
+        await ptb_application.process_update(update)
+    except RuntimeError as e:
+        # লুপ ক্লোজ এরর ইগনোর করা
+        if "Event loop is closed" in str(e):
+            pass 
+        else:
+            print(f"Critical Runtime Error: {e}")
+    except Exception as e:
+        print(f"Other Error: {e}")
+        
+    return "OK", 200
 
-# --- মেইন ফাংশন ---
+# --- মেইন ---
 if __name__ == "__main__":
-    # Render থেকে পোর্ট এবং URL নেওয়া
     PORT = int(os.environ.get("PORT", "8080"))
     RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-    # ওয়েব হুক সেট করার জন্য লুপ চালানো
     if RENDER_EXTERNAL_URL:
         webhook_url = f"{RENDER_EXTERNAL_URL}/{TOKEN}"
         print(f"Setting webhook to: {webhook_url}")
         
-        # বট ইনিশিয়ালাইজ করে হুক সেট করা
         loop = asyncio.get_event_loop()
-        
-        # হুক সেট করার আগে ইনিশিয়ালাইজ করা জরুরি
         if not ptb_application._initialized:
             loop.run_until_complete(ptb_application.initialize())
-            
         loop.run_until_complete(ptb_application.bot.set_webhook(webhook_url))
     else:
         print("Running locally...")
 
-    # Flask সার্ভার রান করা
     app.run(host="0.0.0.0", port=PORT)
     
